@@ -104,6 +104,7 @@ typedef enum {
     PROT_XQUEUE,
     PROT_WSCONS,
     PROT_USB,
+    PROT_SUN,
     PROT_UNKNOWN_KBD
 } KbdProtocolId;
 
@@ -130,4 +131,3 @@ Bool xf86OSKbdPreInit(InputInfoPtr pInfo);
 	BUILTIN_INTERFACE_VERSION_NUMERIC(OS_KBD_VERSION_MAJOR,		\
 					  OS_KBD_VERSION_MINOR,		\
 					  OS_KBD_VERSION_PATCH)
-

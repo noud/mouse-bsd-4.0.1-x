@@ -23,6 +23,8 @@
 #include "atKeynames.h"
 #include "bsd_kbd.h"
 
+#include <termios.h>
+
 extern Bool VTSwitchEnabled;
 #ifdef USE_VT_SYSREQ
 extern Bool VTSysreqToggle;
@@ -30,6 +32,7 @@ extern Bool VTSysreqToggle;
 
 static KbdProtocolRec protocols[] = {
    {"standard", PROT_STD },
+   {"sun", PROT_SUN },
 #ifdef WSCONS_SUPPORT
    {"wskbd", PROT_WSCONS },
 #endif
@@ -379,6 +382,85 @@ stdReadInput(InputInfoPtr pInfo)
        }
 }
 
+/* XXX this code assumes at most one Sun keyboard
+   to do this right probably requires a devprivate or some such */
+void sunReadInput(InputInfoPtr);
+/*static*/ void sunReadInput(InputInfoPtr iip)
+{
+ KbdDevPtr kdp;
+ unsigned char buf[64];
+ int n;
+ int i;
+ int j;
+ unsigned char k;
+ static int eat = 0;
+ static int declick = 0;
+ static unsigned int keysdown[4] = { 0, 0, 0, 0 };
+
+ kdp = (void *) iip->private;
+ n = read(iip->fd,&buf[0],sizeof(buf));
+ if (n <= 0) return;
+ for (i=0;i<n;i++)
+  { if (eat > 0)
+     { /* eat this byte */
+       eat --;
+       continue;
+     }
+    k = buf[i];
+    switch (k)
+     { case 0xff: /* reset - ID follows */
+	  eat = 1;
+	  declick = 1;
+	  break;
+       case 0xfe: /* layout follows */
+	  eat = 1;
+	  break;
+       case 0x7f: /* idle */
+	  for (j=127;j>=0;j--)
+	   { if (keysdown[j>>5] & (1U << (j & 31)))
+	      { keysdown[j>>5] &= ~ (1U << (j & 31));
+		kdp->PostEvent(iip,j,FALSE);
+	      }
+	   }
+	  if (declick == 1) declick = 2;
+	  break;
+       case 0x7e: /* keyboard detected an error - what can we do? */
+	  break;
+       case 0x00: case 0x80:
+	  /* "can't happen" */
+	  break;
+       default:
+	  k --;
+	  if (k & 0x80)
+	   { keysdown[k>>5] &= ~ (1U << (k & 31));
+	     kdp->PostEvent(iip,k,FALSE);
+	   }
+	  else
+	   { keysdown[k>>5] |= 1U << (k & 31);
+	     kdp->PostEvent(iip,k,TRUE);
+	   }
+	  break;
+     }
+  }
+ if (declick == 2)
+  { write(iip->fd,"\13",1);
+    declick = 0;
+  }
+}
+
+static void sunSetupFd(int fd)
+{
+ struct termios tio;
+
+ if (tcgetattr(fd,&tio) < 0) return;
+ cfmakeraw(&tio);
+ tio.c_cc[VMIN] = 1;
+ tio.c_cc[VTIME] = 0;
+ cfsetspeed(&tio,1200);
+ tcsetattr(fd,TCSANOW,&tio);
+ write(fd,"\1",1);
+}
+
 #ifdef WSCONS_SUPPORT
 static void
 WSReadInput(InputInfoPtr pInfo)
@@ -410,10 +492,11 @@ OpenKeyboard(InputInfoPtr pInfo)
     int i;
     KbdProtocolId prot = PROT_UNKNOWN_KBD;
     char *s;
+ char *protname;
 
-    s = xf86SetStrOption(pInfo->options, "Protocol", NULL);
+    protname = xf86SetStrOption(pInfo->options, "Protocol", NULL);
     for (i = 0; protocols[i].name; i++) {
-        if (xf86NameCmp(s, protocols[i].name) == 0) {
+        if (xf86NameCmp(protname, protocols[i].name) == 0) {
            prot = protocols[i].id;
            break;
         }
@@ -423,24 +506,28 @@ OpenKeyboard(InputInfoPtr pInfo)
     	case PROT_STD:
            pInfo->read_input = stdReadInput;
            break;
+    	case PROT_SUN:
+           pInfo->read_input = &sunReadInput;
+           break;
 #ifdef WSCONS_SUPPORT
         case PROT_WSCONS:
            pInfo->read_input = WSReadInput;
            break;
 #endif
         default:
-           xf86Msg(X_ERROR,"\"%s\" is not a valid keyboard protocol name\n", s);
-           xfree(s);
+           xf86Msg(X_ERROR,"\"%s\" is not a valid keyboard protocol name\n", protname);
+           xfree(protname);
            return FALSE;
     }
-    xf86Msg(X_CONFIG, "%s: Protocol: %s\n", pInfo->name, s);
-    xfree(s);
+    xf86Msg(X_CONFIG, "%s: Protocol: %s\n", pInfo->name, protname);
+    xfree(protname);
 
     s = xf86SetStrOption(pInfo->options, "Device", NULL);
     if (s == NULL) {
-       if (prot == PROT_WSCONS) {
+       if ((prot == PROT_WSCONS) || (prot == PROT_SUN)) {
            xf86Msg(X_ERROR,"A \"device\" option is required with"
-                                  " the \"wskbd\" keyboard protocol\n");
+                                  " the \"%s\" keyboard protocol\n",protname);
+	   xfree(protname);
            return FALSE;
        } else {
            pInfo->fd = xf86Info.consoleFd;
@@ -452,13 +539,21 @@ OpenKeyboard(InputInfoPtr pInfo)
        if (pInfo->fd == -1) {
            xf86Msg(X_ERROR, "%s: cannot open \"%s\"\n", pInfo->name, s);
            xfree(s);
+	   xfree(protname);
            return FALSE;
        }
        pKbd->isConsole = FALSE;
        /* XXX What is consType here? */
        pKbd->consType = SYSCONS;
        xfree(s);
+       switch (prot) {
+	   case PROT_SUN:
+	      sunSetupFd(pInfo->fd);
+	      break;
+       }
     }
+
+    xfree(protname);
 
 #if defined (SYSCONS_SUPPORT) || defined (PCVT_SUPPORT)
     if (pKbd->isConsole &&
@@ -533,4 +628,3 @@ xf86OSKbdPreInit(InputInfoPtr pInfo)
     }
     return TRUE;
 }
-
