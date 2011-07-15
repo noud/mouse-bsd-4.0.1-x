@@ -386,8 +386,36 @@ stdReadInput(InputInfoPtr pInfo)
 
 /* XXX this code assumes at most one Sun keyboard
    to do this right probably requires a devprivate or some such */
-void sunReadInput(InputInfoPtr);
-/*static*/ void sunReadInput(InputInfoPtr iip)
+
+static int sun_fd;
+static int sun_eat = 0;
+static enum {
+	 DECLICK_IDLE = 1,	/* idle */
+	 DECLICK_WANTRESET,	/* want to send reset */
+	 DECLICK_SENDRESET,	/* time to send reset */
+	 DECLICK_WANTDECLICK,	/* want to send declick */
+	 DECLICK_SENDDECLICK	/* time to send declick */
+	 } sun_declick = DECLICK_IDLE;
+static unsigned int sun_keysdown[4] = { 0, 0, 0, 0 };
+static int sun_dbg_fd;
+
+static void sun_dbg_out(const char *, ...)
+	__attribute__((__format__(__printf__,1,2)));
+static void sun_dbg_out(const char *fmt, ...)
+{
+ va_list ap;
+ char *s;
+ int n;
+
+ if (sun_dbg_fd < 0) return;
+ va_start(ap,fmt);
+ n = vasprintf(&s,fmt,ap);
+ va_end(ap);
+ write(sun_dbg_fd,s,n);
+ free(s);
+}
+
+static void sunReadInput(InputInfoPtr iip)
 {
  KbdDevPtr kdp;
  unsigned char buf[64];
@@ -395,36 +423,45 @@ void sunReadInput(InputInfoPtr);
  int i;
  int j;
  unsigned char k;
- static int eat = 0;
- static int declick = 0;
- static unsigned int keysdown[4] = { 0, 0, 0, 0 };
 
  kdp = (void *) iip->private;
- n = read(iip->fd,&buf[0],sizeof(buf));
+ n = read(sun_fd,&buf[0],sizeof(buf));
  if (n <= 0) return;
+ sun_dbg_out("sun read returned %d\n",n);
  for (i=0;i<n;i++)
-  { if (eat > 0)
+  { sun_dbg_out("sun read i=%d n=%d eat=%d declick=%d\n",i,n,sun_eat,sun_declick);
+    if (sun_eat > 0)
      { /* eat this byte */
-       eat --;
+       sun_eat --;
        continue;
      }
     k = buf[i];
+    sun_dbg_out("k = %02x\n",k);
     switch (k)
      { case 0xff: /* reset - ID follows */
-	  eat = 1;
-	  declick = 1;
+	  sun_eat = 1;
+	  sun_declick = DECLICK_WANTDECLICK;
 	  break;
        case 0xfe: /* layout follows */
-	  eat = 1;
+	  sun_eat = 1;
 	  break;
        case 0x7f: /* idle */
 	  for (j=127;j>=0;j--)
-	   { if (keysdown[j>>5] & (1U << (j & 31)))
-	      { keysdown[j>>5] &= ~ (1U << (j & 31));
+	   { if (sun_keysdown[j>>5] & (1U << (j & 31)))
+	      { sun_keysdown[j>>5] &= ~ (1U << (j & 31));
 		kdp->PostEvent(iip,j,FALSE);
 	      }
 	   }
-	  if (declick == 1) declick = 2;
+	  switch (sun_declick)
+	   { case DECLICK_WANTRESET:
+		sun_declick = DECLICK_SENDRESET;
+		break;
+	     case DECLICK_WANTDECLICK:
+		sun_declick = DECLICK_SENDDECLICK;
+		break;
+	     default:
+		break;
+	   }
 	  break;
        case 0x7e: /* keyboard detected an error - what can we do? */
 	  break;
@@ -434,33 +471,70 @@ void sunReadInput(InputInfoPtr);
        default:
 	  k --;
 	  if (k & 0x80)
-	   { keysdown[k>>5] &= ~ (1U << (k & 31));
+	   { sun_keysdown[k>>5] &= ~ (1U << (k & 31));
 	     kdp->PostEvent(iip,k,FALSE);
 	   }
 	  else
-	   { keysdown[k>>5] |= 1U << (k & 31);
+	   { sun_keysdown[k>>5] |= 1U << (k & 31);
 	     kdp->PostEvent(iip,k,TRUE);
 	   }
 	  break;
      }
   }
- if (declick == 2)
-  { write(iip->fd,"\13",1); /* \13 is "keyclick off" */
-    declick = 0;
+ switch (sun_declick)
+  { case DECLICK_SENDRESET:
+       sun_dbg_out("declick: resetting\n");
+       write(sun_fd,"\1",1); /* \1 is "reset" */
+       sun_declick = DECLICK_IDLE;
+       break;
+    case DECLICK_SENDDECLICK:
+       sun_dbg_out("declicking\n");
+       write(sun_fd,"\13",1); /* \13 is "keyclick off" */
+       sun_declick = DECLICK_IDLE;
+       break;
   }
+}
+
+void sunBell(
+	InputInfoPtr iip __attribute__((__unused__)),
+	int loudness,
+	int pitch,
+	int duration )
+{
+ static int lastdur = -1;
+ static unsigned char obuf[122];
+ static int dlen;
+
+ if (!loudness || !pitch || !duration) return;
+ if (duration > 1000) duration = 1000;
+ if (duration != lastdur)
+  { int i;
+    lastdur = duration;
+    dlen = ((duration * 120) + 2999) / 1000;
+    if (dlen < 3) dlen = 3; else if (dlen > 122) dlen = 122;
+    obuf[0] = '\2'; /* \2 is "bell on" */
+    bzero(&obuf[1],dlen-2); /* \0 is ignored but takes time */
+    obuf[dlen-1] = '\3'; /* \3 is "bell off" */
+  }
+ sun_dbg_out("bell, dlen=%d\n",dlen);
+ write(sun_fd,&obuf,dlen);
 }
 
 static void sunSetupFd(int fd)
 {
  struct termios tio;
 
+ sun_fd = fd;
  if (tcgetattr(fd,&tio) < 0) return;
  cfmakeraw(&tio);
  tio.c_cc[VMIN] = 1;
  tio.c_cc[VTIME] = 0;
+ tio.c_cflag |= CLOCAL;
  cfsetspeed(&tio,1200);
  tcsetattr(fd,TCSANOW,&tio);
- write(fd,"\1",1); /* \1 is "reset" */
+ sun_declick = DECLICK_WANTRESET;
+ sun_dbg_fd = -1; /* open("/tmp/sun-kbd-dbg",O_WRONLY|O_APPEND,0); */
+ sun_dbg_out("startup\n");
 }
 
 #ifdef WSCONS_SUPPORT
@@ -510,6 +584,7 @@ OpenKeyboard(InputInfoPtr pInfo)
            break;
     	case PROT_SUN:
            pInfo->read_input = &sunReadInput;
+	   pKbd->Bell = &sunBell;
            break;
 #ifdef WSCONS_SUPPORT
         case PROT_WSCONS:
