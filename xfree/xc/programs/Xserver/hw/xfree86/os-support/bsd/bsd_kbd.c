@@ -443,7 +443,7 @@ void sunReadInput(InputInfoPtr);
      }
   }
  if (declick == 2)
-  { write(iip->fd,"\13",1);
+  { write(iip->fd,"\13",1); /* \13 is "keyclick off" */
     declick = 0;
   }
 }
@@ -458,7 +458,7 @@ static void sunSetupFd(int fd)
  tio.c_cc[VTIME] = 0;
  cfsetspeed(&tio,1200);
  tcsetattr(fd,TCSANOW,&tio);
- write(fd,"\1",1);
+ write(fd,"\1",1); /* \1 is "reset" */
 }
 
 #ifdef WSCONS_SUPPORT
