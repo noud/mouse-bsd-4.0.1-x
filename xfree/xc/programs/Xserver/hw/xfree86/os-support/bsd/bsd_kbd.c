@@ -7,6 +7,8 @@
  * Based on the code from bsd_io.c which is
  * Copyright 1992 by Rich Murphey <Rich@Rice.edu>
  * Copyright 1993 by David Dawes <dawes@xfree86.org>
+ *
+ * Hacked over by Mouse to add support for Sun keyboards on serial lines.
  */
 
 #define NEED_EVENTS
