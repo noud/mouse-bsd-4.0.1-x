@@ -535,7 +535,7 @@ OpenKeyboard(InputInfoPtr pInfo)
            pKbd->consType = xf86Info.consType;
        }
     } else {
-       pInfo->fd = open(s, O_RDONLY | O_NONBLOCK | O_EXCL);
+       pInfo->fd = open(s, ((prot==PROT_SUN)?O_RDWR:O_RDONLY) | O_NONBLOCK | O_EXCL, 0);
        if (pInfo->fd == -1) {
            xf86Msg(X_ERROR, "%s: cannot open \"%s\"\n", pInfo->name, s);
            xfree(s);
