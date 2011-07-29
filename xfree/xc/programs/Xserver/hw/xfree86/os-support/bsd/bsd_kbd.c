@@ -520,6 +520,111 @@ void sunBell(
  write(sun_fd,&obuf,dlen);
 }
 
+/*
+ * This replaces PostKbdEvent, from ../../input/keyboard/kbd.c, which
+ *  contains a bunch of crap that's inappropriate for our use (and,
+ *  arguably, inappropriate at all, but never mind).
+ */
+static void sunPostEvent(InputInfoPtr iip, unsigned int key, Bool down)
+{
+ KbdDevPtr pKbd;
+ DeviceIntPtr device;
+ KeyClassRec *keyc;
+ KbdFeedbackClassRec *kbdfeed;
+ KeySym *keysym;
+ int keycode;
+ static int lockkeys = 0;
+#define CAPSFLAG    0x00000001
+#define NUMFLAG     0x00000002
+#define SCROLLFLAG  0x00000004
+#define MODEFLAG    0x00000008
+#define COMPOSEFLAG 0x00000010
+
+ pKbd = (KbdDevPtr) iip->private;
+ device = iip->dev;
+ keyc = device->key;
+ kbdfeed = device->kbdfeed;
+ /* Disable any keyboard processing while in suspend */
+ if (xf86inSuspend) return;
+ keycode = key + MIN_KEYCODE;
+ keysym = keyc->curKeySyms.map +
+	  ( keyc->curKeySyms.mapWidth * 
+	    (keycode - keyc->curKeySyms.minKeyCode) );
+#ifdef XKB
+ if (pKbd->noXkb)
+#endif
+  { /*
+     * Filter redundant locking-key keystrokes.
+     */
+    if (down)
+     { switch (keysym[0])
+	{ case XK_Caps_Lock:
+	     if (lockkeys & CAPSFLAG) return;
+	     lockkeys |= CAPSFLAG;
+	     break;
+	  case XK_Num_Lock:
+	     if (lockkeys & NUMFLAG) return;
+	     lockkeys |= NUMFLAG;
+	     break;
+	  case XK_Scroll_Lock:
+	     if (lockkeys & SCROLLFLAG) return;
+	     lockkeys |= SCROLLFLAG;
+	     break;
+	}
+       if (keysym[1] == XF86XK_ModeLock)
+	{ if (lockkeys & MODEFLAG) return;
+	  lockkeys |= MODEFLAG;
+	}
+     }
+    else
+     { switch (keysym[0])
+	{ case XK_Caps_Lock:
+	     lockkeys &= ~CAPSFLAG;
+	     break;
+	  case XK_Num_Lock:
+	     lockkeys &= ~NUMFLAG;
+	     break;
+	  case XK_Scroll_Lock:
+	     lockkeys &= ~SCROLLFLAG;
+	     break;
+	}
+       if (keysym[1] == XF86XK_ModeLock) lockkeys &= ~MODEFLAG;
+     }
+    /*
+     * LockKey special handling:
+     * Ignore releases.  Toggle on & off on presses.
+     * Don't deal with the Caps_Lock keysym directly, but check the
+     *	lock modifier.
+     *
+     * XXX Is locking behaviour right if keysym[0] is an ordinary
+     *	character but keysym[1] is XF86XK_ModeLock?  Or vice versa and
+     *	Shift is down?
+     */
+    if ( (keyc->modifierMap[keycode] & LockMask) ||
+	 (keysym[0] == XK_Num_Lock) ||
+	 (keysym[0] == XK_Scroll_Lock) ||
+	 (keysym[1] == XF86XK_ModeLock) )
+     { if (! down) return;
+       if (KeyPressed(keycode)) down = 0;
+     }
+  }
+#if 0 /* XXX fix this to make autorepeat work? */
+ /*
+  * check for an autorepeat-event
+  */
+  if (down) {
+      int num = keycode >> 3;
+      int bit = 1 << (keycode & 7);
+      if ((keyc->down[num] & bit) &&
+          ((kbdfeed->ctrl.autoRepeat != AutoRepeatModeOn) ||
+            keyc->modifierMap[keycode] ||
+            !(kbdfeed->ctrl.autoRepeats[num] & bit)))
+          return;
+  }
+#endif
+ xf86PostKeyboardEvent(device,keycode,down);
+}
+
 static void sunSetupFd(int fd)
 {
  struct termios tio;
@@ -585,6 +690,7 @@ OpenKeyboard(InputInfoPtr pInfo)
     	case PROT_SUN:
            pInfo->read_input = &sunReadInput;
 	   pKbd->Bell = &sunBell;
+	   pKbd->PostEvent = &sunPostEvent;
            break;
 #ifdef WSCONS_SUPPORT
         case PROT_WSCONS:
