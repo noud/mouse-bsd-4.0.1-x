@@ -638,7 +638,7 @@ static void sunSetupFd(int fd)
  cfsetspeed(&tio,1200);
  tcsetattr(fd,TCSANOW,&tio);
  sun_declick = DECLICK_WANTRESET;
- sun_dbg_fd = -1; /* open("/tmp/sun-kbd-dbg",O_WRONLY|O_APPEND,0); */
+ sun_dbg_fd = getenv("X_SUN_KBD_DBG") ? open("/tmp/sun-kbd-dbg",O_WRONLY|O_APPEND,0) : -1;
  sun_dbg_out("startup\n");
 }
 
