@@ -471,7 +471,7 @@ static void sunReadInput(InputInfoPtr iip)
        default:
 	  k --;
 	  if (k & 0x80)
-	   { sun_keysdown[k>>5] &= ~ (1U << (k & 31));
+	   { sun_keysdown[(k&0x7f)>>5] &= ~ (1U << (k & 31));
 	     kdp->PostEvent(iip,k,FALSE);
 	   }
 	  else
